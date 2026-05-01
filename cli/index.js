@@ -37,6 +37,13 @@ const UI_PRESETS = {
   tailwind: { label: 'Tailwind CSS', packages: ['tailwindcss', 'postcss', 'autoprefixer'] }
 };
 
+const PACKAGE_VERSION_HINTS = {
+  bootstrap: '^5.3.3',
+  tailwindcss: '^3.4.17',
+  postcss: '^8.4.31',
+  autoprefixer: '^10.4.16'
+};
+
 class CLI {
   constructor(argv = process.argv) {
     this.command = argv[2];
@@ -563,7 +570,11 @@ class CLI {
 
   packageVersionFor(packageName) {
     const rootPackage = require('../package.json');
-    return rootPackage.peerDependencies?.[packageName] || 'latest';
+    return PACKAGE_VERSION_HINTS[packageName] || rootPackage.peerDependencies?.[packageName] || 'latest';
+  }
+
+  frameworkVersion() {
+    return require('../package.json').version;
   }
 
   isPackageInstalled(packageName) {
@@ -1365,7 +1376,7 @@ jobs:
     packageJson: (projectName, uiPreset = 'plain') => {
       const ui = UI_PRESETS[uiPreset] || UI_PRESETS.plain;
       const dependencies = {
-        'easybackend.js': '^3.3.0',
+        'easybackend.js': `^${this.frameworkVersion()}`,
         mongoose: '^7.5.0'
       };
       for (const packageName of ui.packages) {

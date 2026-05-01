@@ -1,6 +1,6 @@
 {
   "name": "easybackend.js",
-  "version": "3.3.1",
+  "version": "3.3.2",
   "description": "A developer-friendly backend DSL and framework for Node.js and Express.",
   "main": "index.js",
   "icon": "public/easyjs-logo-mark.svg",
@@ -208,10 +208,6 @@
     "redis": "^4.6.0",
     "sql.js": "^1.14.1",
     "stripe": "^13.7.0",
-    "bootstrap": "^5.3.3",
-    "tailwindcss": "^3.4.17",
-    "postcss": "^8.4.31",
-    "autoprefixer": "^10.4.16",
     "vscode-languageclient": "^9.0.1",
     "vscode-languageserver": "^9.0.1",
     "vscode-languageserver-textdocument": "^1.0.11"
@@ -302,18 +298,6 @@
       "optional": true
     },
     "stripe": {
-      "optional": true
-    },
-    "bootstrap": {
-      "optional": true
-    },
-    "tailwindcss": {
-      "optional": true
-    },
-    "postcss": {
-      "optional": true
-    },
-    "autoprefixer": {
       "optional": true
     },
     "vscode-languageclient": {

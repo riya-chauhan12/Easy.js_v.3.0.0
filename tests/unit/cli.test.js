@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const CLI = require('../../cli/index');
+const rootPackage = require('../../package.json');
 
 describe('CLI defaults', () => {
   it('falls back to bundled quickstart when no project src/app.easy exists', () => {
@@ -70,7 +71,7 @@ describe('CLI defaults', () => {
       expect(fs.readFileSync(path.join(temp, 'ui-api', 'template', 'api.js'), 'utf8')).toContain('window.EasyAPI');
       expect(fs.readFileSync(path.join(temp, 'ui-api', 'template', 'app.js'), 'utf8')).toContain('copyCurl');
       expect(fs.readFileSync(path.join(temp, 'ui-api', 'README.md'), 'utf8')).toContain('template folder');
-      expect(JSON.parse(fs.readFileSync(path.join(temp, 'ui-api', 'package.json'), 'utf8')).dependencies['easybackend.js']).toBe('^3.3.0');
+      expect(JSON.parse(fs.readFileSync(path.join(temp, 'ui-api', 'package.json'), 'utf8')).dependencies['easybackend.js']).toBe(`^${rootPackage.version}`);
     } finally {
       process.chdir(cwd);
       fs.rmSync(temp, { recursive: true, force: true });
