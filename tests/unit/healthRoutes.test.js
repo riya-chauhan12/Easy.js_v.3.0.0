@@ -11,9 +11,21 @@ function createApp({ db, redis } = {}) {
 }
 
 describe('health routes', () => {
-  it('returns a useful landing payload at the root path', async () => {
+  it('returns a starter UI at the root path', async () => {
     await request(createApp())
       .get('/')
+      .expect(200)
+      .expect('Content-Type', /html/)
+      .expect(res => {
+        expect(res.text).toContain('easy.js backend');
+        expect(res.text).toContain('easy.js logo');
+      });
+  });
+
+  it('returns a useful landing payload at the root path for API clients', async () => {
+    await request(createApp())
+      .get('/')
+      .set('Accept', 'application/json')
       .expect(200)
       .expect(res => {
         expect(res.body.success).toBe(true);

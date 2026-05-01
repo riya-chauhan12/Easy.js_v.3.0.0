@@ -1,27 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const loggerWinston = require('../core/loggerWinston');
-const packageJson = require('../package.json');
-
-function landingPayload() {
-  return {
-    success: true,
-    name: 'easy.js',
-    package: 'easybackend.js',
-    version: packageJson.version,
-    message: 'easy.js backend is running',
-    endpoints: {
-      health: '/health',
-      ready: '/ready',
-      status: '/status',
-      metrics: '/metrics',
-      docs: '/api-docs'
-    }
-  };
-}
+const { buildLandingPayload, renderLandingPage, wantsJson } = require('../core/landingPage');
 
 router.get('/', (req, res) => {
-  res.status(200).json(landingPayload());
+  const payload = buildLandingPayload();
+  if (wantsJson(req)) {
+    return res.status(200).json(payload);
+  }
+  return res.status(200).type('html').send(renderLandingPage(payload));
 });
 
 /**
