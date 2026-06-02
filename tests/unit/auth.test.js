@@ -1,26 +1,47 @@
 const AuthManager = require('../../core/auth');
+const { DatabaseAuthStore, MemoryAuthStore } = require('../../core/authStore');
+
+const JWT_SECRET = 'test-access-secret-at-least-32-characters';
+const REFRESH_SECRET = 'test-refresh-secret-at-least-32-characters';
 
 describe('AuthManager', () => {
-  it('issues, verifies, rotates, and revokes token pairs', () => {
+  it('selects memory or database auth stores from constructor options', () => {
+    const memoryAuth = new AuthManager({
+      jwtSecret: JWT_SECRET,
+      refreshSecret: REFRESH_SECRET
+    });
+    expect(memoryAuth.store).toBeInstanceOf(MemoryAuthStore);
+
+    const knex = jest.fn();
+    const databaseAuth = new AuthManager({
+      jwtSecret: JWT_SECRET,
+      refreshSecret: REFRESH_SECRET,
+      knex
+    });
+    expect(databaseAuth.store).toBeInstanceOf(DatabaseAuthStore);
+    expect(databaseAuth.store.knex).toBe(knex);
+  });
+
+  it('issues, verifies, rotates, and revokes token pairs', async () => {
     const auth = new AuthManager({
-      jwtSecret: 'access-secret',
-      refreshSecret: 'refresh-secret',
+      jwtSecret: JWT_SECRET,
+      refreshSecret: REFRESH_SECRET,
       jwtExpiry: '1h',
       refreshExpiry: '1h'
     });
 
-    const pair = auth.issueTokenPair('user-1', { role: 'admin' });
+    const pair = await auth.issueTokenPair('user-1', { role: 'admin' });
     expect(auth.verifyToken(pair.accessToken)).toEqual(expect.objectContaining({
       userId: 'user-1',
       role: 'admin'
     }));
 
-    const refreshPayload = auth.verifyRefreshToken(pair.refreshToken);
+    const refreshPayload = await auth.verifyRefreshToken(pair.refreshToken);
     expect(refreshPayload.userId).toBe('user-1');
 
-    const nextPair = auth.rotateRefreshToken(pair.refreshToken, { role: 'admin' });
+    const nextPair = await auth.rotateRefreshToken(pair.refreshToken, { role: 'admin' });
     expect(nextPair.accessToken).toBeDefined();
-    expect(() => auth.verifyRefreshToken(pair.refreshToken)).toThrow('Invalid refresh token');
+    await expect(auth.verifyRefreshToken(pair.refreshToken)).rejects.toThrow('Invalid refresh token');
   });
 
   it('hashes passwords and logs users in through a database adapter', async () => {
@@ -76,14 +97,14 @@ describe('AuthManager', () => {
     auth.initialize({ model: 'users', type: 'jwt' });
     const db = { query: jest.fn().mockResolvedValue({ ok: true }) };
 
-    const resetToken = auth.createPasswordResetToken('user-1');
+    const resetToken = await auth.createPasswordResetToken('user-1');
     await expect(auth.resetPassword(resetToken, 'new-password', db)).resolves.toEqual({
       success: true,
       userId: 'user-1'
     });
     await expect(auth.resetPassword(resetToken, 'again', db)).rejects.toThrow('invalid or expired');
 
-    const verifyToken = auth.createEmailVerificationToken('user-1', 'user@example.com');
+    const verifyToken = await auth.createEmailVerificationToken('user-1', 'user@example.com');
     await expect(auth.verifyEmail(verifyToken, db)).resolves.toEqual({
       success: true,
       userId: 'user-1',
