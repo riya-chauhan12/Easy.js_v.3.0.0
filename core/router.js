@@ -3,35 +3,25 @@ const Logger = require('./logger');
 class RouterManager {
 
   sanitizeRecord(record) {
-  if (!record) return record;
+    if (!record) return record;
 
-  const obj = record.toObject
-    ? record.toObject()
-    : { ...record };
+    const obj = record.toObject ? record.toObject() : { ...record };
 
-  delete obj.password;
-  delete obj.passwordHash;
-  delete obj.hashedPassword;
+    delete obj.password;
+    delete obj.passwordHash;
+    delete obj.hashedPassword;
 
-  return obj;
- }
-
-sanitizeResults(result) {
-  if (Array.isArray(result)) {
-    return result.map(record => this.sanitizeRecord(record));
+    return obj;
   }
 
-  return this.sanitizeRecord(result);
-}
+  sanitizeResults(result) {
+    if (Array.isArray(result)) {
+      return result.map(record => this.sanitizeRecord(record));
+    }
 
-
-
-
-
-
-
-
-
+    return this.sanitizeRecord(result);
+  }
+  
   registerRoutes(app, routes, db, validator) {
     for (const route of routes) {
       const handler = this.createRouteHandler(route, db, validator);
@@ -49,7 +39,6 @@ sanitizeResults(result) {
       try {
         const { method, model, path } = route;
 
-        // Validate request if rules exist
         if (validator && req.body) {
           const validationError = validator.validate(model, req.body);
           if (validationError) {
