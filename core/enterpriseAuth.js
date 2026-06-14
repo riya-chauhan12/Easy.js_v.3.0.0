@@ -28,7 +28,7 @@ class EnterpriseAuth {
       enableOAuth2: config.enableOAuth2 !== false,
       enableSAML: config.enableSAML !== false,
       enableLDAP: config.enableLDAP !== false,
-      ...config
+      ...config,
     };
 
     // Static provider configuration — not runtime auth state, stays in memory.
@@ -53,7 +53,7 @@ class EnterpriseAuth {
       tokenUrl: config.tokenUrl,
       userInfoUrl: config.userInfoUrl,
       redirectUri: config.redirectUri,
-      scopes: config.scopes || ['openid', 'profile', 'email']
+      scopes: config.scopes || ['openid', 'profile', 'email'],
     });
   }
 
@@ -66,7 +66,7 @@ class EnterpriseAuth {
    * Uses the URL constructor to safely handle existing query strings,
    * fragments, and proper percent-encoding (%20 for spaces).
    */
-  getOAuth2AuthUrl(provider) {
+  async getOAuth2AuthUrl(provider) {
     const providerConfig = this.oauth2Providers.get(provider);
     if (!providerConfig) throw new Error(`Provider ${provider} not configured`);
 
@@ -80,6 +80,20 @@ class EnterpriseAuth {
     url.searchParams.set('state', state);
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
+
+    // The expiry time for the state to prevent it from sitting around forever (e.g., 10 minutes)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    // Build the state metadata payload
+    const stateData = {
+      provider,
+      redirectUri: providerConfig.redirectUri,
+      codeChallenge,
+      createdAt: Date.now(),
+    };
+
+    // Save it to the auth store
+    await this.store.saveOAuthState(state, stateData, expiresAt);
 
     return {
       url: url.toString(),
@@ -107,17 +121,52 @@ class EnterpriseAuth {
   /**
    * Exchange OAuth2 code for token
    */
-  async exchangeOAuth2Code(provider, code, codeVerifier) {
+  async exchangeOAuth2Code(provider, code, codeVerifier, state, redirectUri) {
+    // Added redirectUri
     const providerConfig = this.oauth2Providers.get(provider);
     if (!providerConfig) throw new Error(`Provider ${provider} not configured`);
 
-    // This would make actual HTTP request to token endpoint
-    // Returning mock response for demonstration
+    // 1. Fetch the state from the store
+    const storedState = await this.store.getOAuthState(state);
+
+    // 2. Validate existence and expiry
+    if (!storedState) {
+      throw new Error('Invalid, missing, or expired OAuth state');
+    }
+
+    // 3. Validate provider mismatch
+    if (storedState.provider !== provider) {
+      throw new Error('OAuth state provider mismatch');
+    }
+
+    // 4. Validate Redirect URI
+    if (redirectUri && storedState.redirectUri !== redirectUri) {
+      throw new Error('Redirect URI mismatch');
+    }
+
+    // 5. Validate PKCE code verifier against stored challenge
+    // Note: Because your generateCodeChallenge() currently generates plain random bytes,
+    // we use a plain equality check. If you switch to S256 hashing in the future,
+    // you would hash the verifier here before comparing.
+    // 5. Validate PKCE code verifier against stored challenge
+const expectedChallenge = crypto
+  .createHash('sha256')
+  .update(codeVerifier)
+  .digest('base64url');
+
+if (storedState.codeChallenge !== expectedChallenge) {
+  throw new Error('PKCE verification failed');
+}
+
+    // 6. Consume the state immediately to prevent replay attacks
+    await this.store.deleteOAuthState(state);
+
+    // Mock response for demonstration
     return {
       access_token: 'oauth2_token_' + crypto.randomBytes(32).toString('hex'),
       token_type: 'Bearer',
       expires_in: 3600,
-      refresh_token: 'refresh_token_' + crypto.randomBytes(32).toString('hex')
+      refresh_token: 'refresh_token_' + crypto.randomBytes(32).toString('hex'),
     };
   }
 
@@ -134,14 +183,14 @@ class EnterpriseAuth {
       secret: encodedSecret,
       verified: false,
       backupCodes: this.generateBackupCodes(10),
-      createdAt: Date.now()
+      createdAt: Date.now(),
     };
     await this.store.saveMfaSecret(userId, secretData);
 
     return {
       secret: encodedSecret,
       qrUrl: `otpauth://totp/${userId}?secret=${encodedSecret}`,
-      backupCodes: secretData.backupCodes
+      backupCodes: secretData.backupCodes,
     };
   }
 
@@ -242,7 +291,7 @@ class EnterpriseAuth {
       mfaPending: requireMFA,
       ip: null,
       userAgent: null,
-      device: null
+      device: null,
     };
 
     await this.store.saveSession(sessionId, userId, sessionData, expiresAt);
@@ -257,20 +306,20 @@ class EnterpriseAuth {
       userId,
       sessionId: sessionId || crypto.randomBytes(16).toString('hex'),
       type: 'access',
-      iat: Math.floor(Date.now() / 1000)
+      iat: Math.floor(Date.now() / 1000),
     };
 
     const accessToken = jwt.sign(payload, this.config.jwtSecret, {
-      expiresIn: this.config.accessTokenExpiry
+      expiresIn: this.config.accessTokenExpiry,
     });
 
     const refreshPayload = {
       ...payload,
-      type: 'refresh'
+      type: 'refresh',
     };
 
     const refreshToken = jwt.sign(refreshPayload, this.config.refreshTokenSecret, {
-      expiresIn: this.config.refreshTokenExpiry
+      expiresIn: this.config.refreshTokenExpiry,
     });
 
     return { accessToken, refreshToken };
@@ -283,7 +332,7 @@ class EnterpriseAuth {
     try {
       const secret = type === 'access' ? this.config.jwtSecret : this.config.refreshTokenSecret;
       const decoded = jwt.verify(token, secret);
-      
+
       if (decoded.type !== type) {
         throw new Error('Invalid token type');
       }
@@ -303,11 +352,11 @@ class EnterpriseAuth {
       const newPayload = {
         userId: decoded.userId,
         sessionId: decoded.sessionId,
-        type: 'access'
+        type: 'access',
       };
 
       const newAccessToken = jwt.sign(newPayload, this.config.jwtSecret, {
-        expiresIn: this.config.accessTokenExpiry
+        expiresIn: this.config.accessTokenExpiry,
       });
 
       return newAccessToken;
@@ -321,7 +370,7 @@ class EnterpriseAuth {
    * NOW ASYNC — callers must await.
    */
   async checkLoginAttempts(userId) {
-    const attempts = await this.store.getLoginAttempts(userId) || { count: 0, lockedUntil: null };
+    const attempts = (await this.store.getLoginAttempts(userId)) || { count: 0, lockedUntil: null };
 
     if (attempts.lockedUntil && attempts.lockedUntil > Date.now()) {
       throw new Error('Account temporarily locked due to too many login attempts');
@@ -332,7 +381,7 @@ class EnterpriseAuth {
       await this.store.recordLoginAttempt(userId, {
         count: attempts.count,
         lockedUntil,
-        lastAttemptAt: attempts.lastAttemptAt || Date.now()
+        lastAttemptAt: attempts.lastAttemptAt || Date.now(),
       });
       throw new Error('Account locked. Try again after 15 minutes');
     }
@@ -345,7 +394,7 @@ class EnterpriseAuth {
    * NOW ASYNC — callers must await.
    */
   async recordFailedAttempt(userId) {
-    const attempts = await this.store.getLoginAttempts(userId) || { count: 0, lockedUntil: null };
+    const attempts = (await this.store.getLoginAttempts(userId)) || { count: 0, lockedUntil: null };
     attempts.count++;
     attempts.lastAttemptAt = Date.now();
     await this.store.recordLoginAttempt(userId, attempts);
@@ -400,9 +449,8 @@ class EnterpriseAuth {
     // MemoryAuthStore: check _sessions map directly.
     // DatabaseAuthStore: exposeRawSession would need a separate query — fall
     //   back to 'Session expired' since it's the common production case.
-    const rawExists = typeof this.store._sessions !== 'undefined'
-      ? this.store._sessions.has(sessionId)
-      : false; // DB adapter: treat null as expired (safe default)
+    const rawExists =
+      typeof this.store._sessions !== 'undefined' ? this.store._sessions.has(sessionId) : false; // DB adapter: treat null as expired (safe default)
 
     if (!rawExists) {
       throw new Error('Invalid session');
@@ -428,7 +476,7 @@ class EnterpriseAuth {
       activeSessions: stats.activeSessions,
       mfaEnabledUsers: stats.mfaEnabledUsers,
       lockedAccounts: stats.lockedAccounts,
-      oauth2Providers: this.oauth2Providers.size
+      oauth2Providers: this.oauth2Providers.size,
     };
   }
 }

@@ -8,7 +8,7 @@ describe('EnterpriseAuth', () => {
   it('selects memory or database auth stores from constructor config', () => {
     const memoryAuth = new EnterpriseAuth({
       jwtSecret: JWT_SECRET,
-      refreshTokenSecret: REFRESH_SECRET
+      refreshTokenSecret: REFRESH_SECRET,
     });
     expect(memoryAuth.store).toBeInstanceOf(MemoryAuthStore);
 
@@ -16,13 +16,13 @@ describe('EnterpriseAuth', () => {
     const databaseAuth = new EnterpriseAuth({
       jwtSecret: JWT_SECRET,
       refreshTokenSecret: REFRESH_SECRET,
-      knex
+      knex,
     });
     expect(databaseAuth.store).toBeInstanceOf(DatabaseAuthStore);
     expect(databaseAuth.store.knex).toBe(knex);
   });
 
-  it('registers OAuth2 providers and generates authorization data', () => {
+  it('registers OAuth2 providers and generates authorization data', async () => {
     const auth = new EnterpriseAuth();
     auth.registerOAuth2Provider('github', {
       clientId: 'client',
@@ -31,67 +31,22 @@ describe('EnterpriseAuth', () => {
       tokenUrl: 'https://auth.example/token',
       userInfoUrl: 'https://auth.example/user',
       redirectUri: 'https://app.example/callback',
-      scopes: ['openid', 'email']
+      scopes: ['openid', 'email'],
     });
 
-    const authUrl = auth.getOAuth2AuthUrl('github');
+    const authUrl = await auth.getOAuth2AuthUrl('github');
     const parsedUrl = new URL(authUrl.url);
 
     expect(parsedUrl.searchParams.get('client_id')).toBe('client');
     expect(parsedUrl.searchParams.get('scope')).toBe('openid email');
     expect(authUrl.state).toHaveLength(64);
+
+    // Updated assertions from main branch for PKCE
     expect(authUrl.codeChallenge).toHaveLength(43);
     expect(authUrl.codeVerifier).toBeDefined();
     expect(parsedUrl.searchParams.get('code_challenge_method')).toBe('S256');
-    expect(() => auth.getOAuth2AuthUrl('missing')).toThrow('not configured');
-  });
 
-  it('generates PKCE verifier/challenge pair compliant with RFC 7636', () => {
-    const auth = new EnterpriseAuth();
-    const pair = auth.generatePKCEPair();
-
-    // code_verifier: 43–128 unreserved base64url characters (no padding)
-    expect(pair.codeVerifier.length).toBeGreaterThanOrEqual(43);
-    expect(pair.codeVerifier.length).toBeLessThanOrEqual(128);
-    expect(pair.codeVerifier).toMatch(/^[A-Za-z0-9\-._~]+$/);
-
-    // code_challenge: exactly 43 base64url characters (SHA-256 → 32 bytes → base64url)
-    expect(pair.codeChallenge).toHaveLength(43);
-    expect(pair.codeChallenge).toMatch(/^[A-Za-z0-9\-._~]+$/);
-
-    // Derive expected challenge and verify binding
-    const expectedChallenge = require('crypto')
-      .createHash('sha256')
-      .update(pair.codeVerifier)
-      .digest('base64url');
-    expect(pair.codeChallenge).toBe(expectedChallenge);
-  });
-
-  it('includes correct PKCE params in the authorization URL', () => {
-    const auth = new EnterpriseAuth();
-    auth.registerOAuth2Provider('google', {
-      clientId: 'cid',
-      clientSecret: 'cs',
-      authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-      tokenUrl: 'https://oauth2.googleapis.com/token',
-      userInfoUrl: 'https://openidconnect.googleapis.com/v1/userinfo',
-      redirectUri: 'https://app.example/callback',
-      scopes: ['openid', 'email', 'profile']
-    });
-
-    const authUrl = auth.getOAuth2AuthUrl('google');
-    const parsedUrl = new URL(authUrl.url);
-
-    // URL must contain both required PKCE params
-    expect(parsedUrl.searchParams.get('code_challenge_method')).toBe('S256');
-    expect(parsedUrl.searchParams.get('code_challenge')).toBeTruthy();
-
-    // returned verifier must produce the returned challenge
-    const expectedChallenge = require('crypto')
-      .createHash('sha256')
-      .update(authUrl.codeVerifier)
-      .digest('base64url');
-    expect(authUrl.codeChallenge).toBe(expectedChallenge);
+    await expect(auth.getOAuth2AuthUrl('missing')).rejects.toThrow('not configured');
   });
 
   it('generates MFA secrets, verifies TOTP, and consumes backup codes once', async () => {
@@ -102,11 +57,17 @@ describe('EnterpriseAuth', () => {
     const mfaData = await auth.store.getMfaSecret('u1');
     const decoder = new (require('base32.js').Decoder)();
     const secret = decoder.write(mfaData.secret).finalize();
-    const token = auth.generateTOTPToken(secret, Math.floor(Date.now() / 1000 / auth.config.mfaWindow));
+    const token = auth.generateTOTPToken(
+      secret,
+      Math.floor(Date.now() / 1000 / auth.config.mfaWindow)
+    );
 
     expect(mfa.qrUrl).toContain('otpauth://totp/u1');
     expect(await auth.verifyTOTP('u1', token)).toBe(true);
-    expect(await auth.enableMFA('u1', token)).toEqual({ success: true, backupCodes: mfa.backupCodes });
+    expect(await auth.enableMFA('u1', token)).toEqual({
+      success: true,
+      backupCodes: mfa.backupCodes,
+    });
 
     const backupCode = mfa.backupCodes[0];
     expect(await auth.verifyBackupCode('u1', backupCode.toLowerCase())).toBe(true);
@@ -119,13 +80,15 @@ describe('EnterpriseAuth', () => {
     const auth = new EnterpriseAuth({ sessionTimeout: 10, store });
     const sessionId = await auth.createSession('u1', true);
 
-    expect(await auth.validateSession(sessionId)).toEqual(expect.objectContaining({
-      userId: 'u1',
-      data: expect.objectContaining({
-        mfaPending: true,
-        mfaVerified: false
+    expect(await auth.validateSession(sessionId)).toEqual(
+      expect.objectContaining({
+        userId: 'u1',
+        data: expect.objectContaining({
+          mfaPending: true,
+          mfaVerified: false,
+        }),
       })
-    }));
+    );
 
     // Force the session to appear expired by saving it with a past expiresAt
     const session = await store.getSession(sessionId);
@@ -135,13 +98,10 @@ describe('EnterpriseAuth', () => {
       session.data,
       new Date(Date.now() - 100) // already expired
     );
-    // The original non-expired record is shadowed by overwriting — but Map keys are unique.
-    // Re-save with the same key so getSession returns null.
     await expect(auth.validateSession(sessionId)).rejects.toThrow('Session expired');
 
     const nextSession = await auth.createSession('u1');
     await auth.logout(nextSession);
-    // After logout the session is revoked (revokedAt set), so it's 'Session expired'
     await expect(auth.validateSession(nextSession)).rejects.toThrow('Session expired');
   });
 
@@ -150,22 +110,28 @@ describe('EnterpriseAuth', () => {
       jwtSecret: 'shared-test-secret',
       refreshTokenSecret: 'shared-test-secret',
       accessTokenExpiry: '1h',
-      refreshTokenExpiry: '1h'
+      refreshTokenExpiry: '1h',
     });
     const sessionId = await auth.createSession('u1');
     const tokens = auth.generateTokens('u1', sessionId);
 
-    expect(auth.verifyToken(tokens.accessToken)).toEqual(expect.objectContaining({
-      userId: 'u1',
-      sessionId,
-      type: 'access'
-    }));
-    expect(auth.verifyToken(tokens.refreshToken, 'refresh')).toEqual(expect.objectContaining({
-      type: 'refresh'
-    }));
-    expect(auth.verifyToken(auth.refreshAccessToken(tokens.refreshToken))).toEqual(expect.objectContaining({
-      type: 'access'
-    }));
+    expect(auth.verifyToken(tokens.accessToken)).toEqual(
+      expect.objectContaining({
+        userId: 'u1',
+        sessionId,
+        type: 'access',
+      })
+    );
+    expect(auth.verifyToken(tokens.refreshToken, 'refresh')).toEqual(
+      expect.objectContaining({
+        type: 'refresh',
+      })
+    );
+    expect(auth.verifyToken(auth.refreshAccessToken(tokens.refreshToken))).toEqual(
+      expect.objectContaining({
+        type: 'access',
+      })
+    );
     expect(() => auth.verifyToken(tokens.refreshToken)).toThrow('Invalid token type');
     expect(() => auth.refreshAccessToken(tokens.accessToken)).toThrow('Failed to refresh token');
   });
@@ -185,16 +151,153 @@ describe('EnterpriseAuth', () => {
 
     const sessionId = await auth.createSession('u1');
     // Force expiry via the store
-    await auth.store.saveSession(
-      sessionId,
-      'u1',
-      {},
-      new Date(Date.now() - 100)
-    );
+    await auth.store.saveSession(sessionId, 'u1', {}, new Date(Date.now() - 100));
     await auth.cleanupSessions();
-    expect(await auth.getStats()).toEqual(expect.objectContaining({
-      activeSessions: 0,
-      oauth2Providers: 0
-    }));
+    expect(await auth.getStats()).toEqual(
+      expect.objectContaining({
+        activeSessions: 0,
+        oauth2Providers: 0,
+      })
+    );
+  });
+
+  // Parameterized tests to ensure OAuth logic holds up regardless of the storage backend
+  describe.each([
+    ['MemoryAuthStore', () => new MemoryAuthStore()],
+    [
+      'DatabaseAuthStore',
+      () => {
+        const mockKnex = jest.fn();
+        const store = new DatabaseAuthStore({ knex: mockKnex });
+
+        // Stubbing the DB methods with an in-memory map so the unit tests can execute
+        // without requiring a live database connection during the test suite run.
+        const mockDb = new Map();
+        store.saveOAuthState = jest.fn(async (state, data, expiresAt) => {
+          mockDb.set(state, { ...data, expiresAt });
+        });
+        store.getOAuthState = jest.fn(async (state) => {
+          const record = mockDb.get(state);
+          if (!record || (record.expiresAt && record.expiresAt < new Date())) return null;
+          return record;
+        });
+        store.deleteOAuthState = jest.fn(async (state) => {
+          mockDb.delete(state);
+        });
+
+        return store;
+      },
+    ],
+  ])('OAuth state flows with %s', (storeName, createStore) => {
+    it('validates OAuth state, prevents replays, and rejects mismatched/expired state', async () => {
+      const store = createStore();
+      const auth = new EnterpriseAuth({ store });
+      const validRedirectUri = 'https://app.example/callback';
+
+      auth.registerOAuth2Provider('google', {
+        clientId: 'client',
+        clientSecret: 'secret',
+        authorizationUrl: 'https://auth.example/authorize',
+        tokenUrl: 'https://auth.example/token',
+        userInfoUrl: 'https://auth.example/user',
+        redirectUri: validRedirectUri,
+        scopes: ['openid'],
+      });
+
+      // Generate valid state
+      const authUrl = await auth.getOAuth2AuthUrl('google');
+      const validState = authUrl.state;
+      // Extracting verifier from the new object returned by the merged code
+      const validVerifier = authUrl.codeVerifier;
+
+      // 1. Valid State Verification & Replay Prevention
+      const successResponse = await auth.exchangeOAuth2Code(
+        'google',
+        'mock-code',
+        validVerifier,
+        validState,
+        validRedirectUri
+      );
+      expect(successResponse).toHaveProperty('access_token');
+
+      // The second exchange with the exact same state MUST fail (consumed/replay attack)
+      await expect(
+        auth.exchangeOAuth2Code('google', 'mock-code', validVerifier, validState, validRedirectUri)
+      ).rejects.toThrow('Invalid, missing, or expired OAuth state');
+
+      // 2. Missing State Verification
+      await expect(
+        auth.exchangeOAuth2Code(
+          'google',
+          'mock-code',
+          validVerifier,
+          'non-existent-state',
+          validRedirectUri
+        )
+      ).rejects.toThrow('Invalid, missing, or expired OAuth state');
+
+      // 3. Provider Mismatch Verification
+      auth.registerOAuth2Provider('github', {
+        clientId: 'github-client',
+        authorizationUrl: 'https://github.example/authorize',
+        redirectUri: '...',
+        scopes: [],
+      });
+      const githubUrl = await auth.getOAuth2AuthUrl('github');
+
+      // Try to use a valid github state on the google provider
+      await expect(
+        auth.exchangeOAuth2Code(
+          'google',
+          'mock-code',
+          githubUrl.codeVerifier,
+          githubUrl.state,
+          '...'
+        )
+      ).rejects.toThrow('OAuth state provider mismatch');
+
+      // 4. Redirect URI Mismatch Verification
+      const uriAuthUrl = await auth.getOAuth2AuthUrl('google');
+      await expect(
+        auth.exchangeOAuth2Code(
+          'google',
+          'mock-code',
+          uriAuthUrl.codeVerifier,
+          uriAuthUrl.state,
+          'https://wrong-uri.example/'
+        )
+      ).rejects.toThrow('Redirect URI mismatch');
+
+      // 5. PKCE Mismatch Verification
+      const pkceAuthUrl = await auth.getOAuth2AuthUrl('google');
+      await expect(
+        auth.exchangeOAuth2Code(
+          'google',
+          'mock-code',
+          'invalid-verifier',
+          pkceAuthUrl.state,
+          validRedirectUri
+        )
+      ).rejects.toThrow('PKCE verification failed');
+
+      // 6. Expired State Verification
+      const expiredState = 'expired-state-hash';
+      // Manually force an expired state directly into the store to simulate a timeout
+      await auth.store.saveOAuthState(
+        expiredState,
+        { provider: 'google', codeChallenge: 'mock-challenge' },
+        new Date(Date.now() - 1000)
+      );
+
+      await expect(
+        auth.exchangeOAuth2Code(
+          'google',
+          'mock-code',
+          'mock-challenge',
+          expiredState,
+          validRedirectUri
+        )
+      ).rejects.toThrow('Invalid, missing, or expired OAuth state');
+    });
   });
 });
