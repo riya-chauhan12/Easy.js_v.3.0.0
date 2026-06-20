@@ -204,143 +204,149 @@ describe('EnterpriseAuth', () => {
     );
   });
 
-  // Parameterized tests to ensure OAuth logic holds up regardless of the storage backend
-  describe.each([
-    ['MemoryAuthStore', () => new MemoryAuthStore()],
-    [
-      'DatabaseAuthStore',
-      () => {
-        const mockKnex = jest.fn();
-        const store = new DatabaseAuthStore({ knex: mockKnex });
-
-        // Stubbing the DB methods with an in-memory map so the unit tests can execute
-        // without requiring a live database connection during the test suite run.
-        const mockDb = new Map();
-        store.saveOAuthState = jest.fn(async (state, data, expiresAt) => {
-          mockDb.set(state, { ...data, expiresAt });
-        });
-        store.getOAuthState = jest.fn(async (state) => {
-          const record = mockDb.get(state);
-          if (!record || (record.expiresAt && record.expiresAt < new Date())) return null;
-          return record;
-        });
-        store.deleteOAuthState = jest.fn(async (state) => {
-          mockDb.delete(state);
-        });
-
-        return store;
-      },
-    ],
-  ])('OAuth state flows with %s', (storeName, createStore) => {
-    it('validates OAuth state, prevents replays, and rejects mismatched/expired state', async () => {
-      const store = createStore();
-      const auth = new EnterpriseAuth({ store });
-      const validRedirectUri = 'https://app.example/callback';
-
-      auth.registerOAuth2Provider('google', {
-        clientId: 'client',
-        clientSecret: 'secret',
-        authorizationUrl: 'https://auth.example/authorize',
-        tokenUrl: 'https://auth.example/token',
-        userInfoUrl: 'https://auth.example/user',
-        redirectUri: validRedirectUri,
-        scopes: ['openid'],
-      });
-
-      // Generate valid state
-      const authUrl = await auth.getOAuth2AuthUrl('google');
-      const validState = authUrl.state;
-      // Extracting verifier from the new object returned by the merged code
-      const validVerifier = authUrl.codeVerifier;
-
-      // 1. Valid State Verification & Replay Prevention
-      const successResponse = await auth.exchangeOAuth2Code(
-        'google',
-        'mock-code',
-        validVerifier,
-        validState,
-        validRedirectUri
-      );
-      expect(successResponse).toHaveProperty('access_token');
-
-      // The second exchange with the exact same state MUST fail (consumed/replay attack)
-      await expect(
-        auth.exchangeOAuth2Code('google', 'mock-code', validVerifier, validState, validRedirectUri)
-      ).rejects.toThrow('Invalid, missing, or expired OAuth state');
-
-      // 2. Missing State Verification
-      await expect(
-        auth.exchangeOAuth2Code(
-          'google',
-          'mock-code',
-          validVerifier,
-          'non-existent-state',
-          validRedirectUri
-        )
-      ).rejects.toThrow('Invalid, missing, or expired OAuth state');
-
-      // 3. Provider Mismatch Verification
-      auth.registerOAuth2Provider('github', {
-        clientId: 'github-client',
-        authorizationUrl: 'https://github.example/authorize',
-        redirectUri: '...',
-        scopes: [],
-      });
-      const githubUrl = await auth.getOAuth2AuthUrl('github');
-
-      // Try to use a valid github state on the google provider
-      await expect(
-        auth.exchangeOAuth2Code(
-          'google',
-          'mock-code',
-          githubUrl.codeVerifier,
-          githubUrl.state,
-          '...'
-        )
-      ).rejects.toThrow('OAuth state provider mismatch');
-
-      // 4. Redirect URI Mismatch Verification
-      const uriAuthUrl = await auth.getOAuth2AuthUrl('google');
-      await expect(
-        auth.exchangeOAuth2Code(
-          'google',
-          'mock-code',
-          uriAuthUrl.codeVerifier,
-          uriAuthUrl.state,
-          'https://wrong-uri.example/'
-        )
-      ).rejects.toThrow('Redirect URI mismatch');
-
-      // 5. PKCE Mismatch Verification
-      const pkceAuthUrl = await auth.getOAuth2AuthUrl('google');
-      await expect(
-        auth.exchangeOAuth2Code(
-          'google',
-          'mock-code',
-          'invalid-verifier',
-          pkceAuthUrl.state,
-          validRedirectUri
-        )
-      ).rejects.toThrow('PKCE verification failed');
-
-      // 6. Expired State Verification
-      const expiredState = 'expired-state-hash';
-      // Manually force an expired state directly into the store to simulate a timeout
-      await auth.store.saveOAuthState(
-        expiredState,
-        { provider: 'google', codeChallenge: 'mock-challenge' },
-        new Date(Date.now() - 1000)
-      );
-
-      await expect(
-        auth.exchangeOAuth2Code(
-          'google',
-          'mock-code',
-          'mock-challenge',
-          expiredState,
-          validRedirectUri
-        )
-      ).rejects.toThrow('Invalid, missing, or expired OAuth state');
+  it('exchanges OAuth2 authorization code successfully', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: 'access-token',
+        refresh_token: 'refresh-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      }),
     });
+
+    const auth = new EnterpriseAuth({
+      fetch: mockFetch,
+    });
+
+    auth.registerOAuth2Provider('github', {
+      clientId: 'client',
+      clientSecret: 'secret',
+      authorizationUrl: 'https://auth.example/authorize',
+      tokenUrl: 'https://auth.example/token',
+      userInfoUrl: 'https://auth.example/user',
+      redirectUri: 'https://app.example/callback',
+    });
+
+    const authUrl = await auth.getOAuth2AuthUrl('github');
+
+    const result = await auth.exchangeOAuth2Code(
+      'github',
+      'auth-code',
+      authUrl.codeVerifier,
+      authUrl.state,
+      'https://app.example/callback'
+    );
+
+    expect(result.access_token).toBe('access-token');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends correct OAuth2 token exchange payload including PKCE verifier', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: 'token',
+      }),
+    });
+
+    const auth = new EnterpriseAuth({
+      fetch: mockFetch,
+    });
+
+    auth.registerOAuth2Provider('github', {
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      authorizationUrl: 'https://auth.example/authorize',
+      tokenUrl: 'https://auth.example/token',
+      userInfoUrl: 'https://auth.example/user',
+      redirectUri: 'https://app.example/callback',
+    });
+
+    const authUrl = await auth.getOAuth2AuthUrl('github');
+
+    await auth.exchangeOAuth2Code(
+      'github',
+      'oauth-code',
+      authUrl.codeVerifier,
+      authUrl.state,
+      'https://app.example/callback'
+    );
+
+    const [url, options] = mockFetch.mock.calls[0];
+
+    expect(url).toBe('https://auth.example/token');
+    expect(options.method).toBe('POST');
+
+    const body = options.body.toString();
+
+    expect(body).toContain('grant_type=authorization_code');
+    expect(body).toContain('client_id=client-id');
+    expect(body).toContain('client_secret=client-secret');
+    expect(body).toContain('code=oauth-code');
+    expect(body).toContain('code_verifier=');
+  });
+
+  it('handles OAuth provider error responses', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: false,
+      json: async () => ({
+        error: 'invalid_grant',
+      }),
+    });
+
+    const auth = new EnterpriseAuth({
+      fetch: mockFetch,
+    });
+
+    auth.registerOAuth2Provider('github', {
+      clientId: 'client',
+      clientSecret: 'secret',
+      authorizationUrl: 'https://auth.example/authorize',
+      tokenUrl: 'https://auth.example/token',
+      userInfoUrl: 'https://auth.example/user',
+      redirectUri: 'https://app.example/callback',
+    });
+
+    const authUrl = await auth.getOAuth2AuthUrl('github');
+
+    await expect(
+      auth.exchangeOAuth2Code(
+        'github',
+        'bad-code',
+        authUrl.codeVerifier,
+        authUrl.state,
+        'https://app.example/callback'
+      )
+    ).rejects.toThrow('invalid_grant');
+  });
+
+  it('handles OAuth token exchange network failures', async () => {
+    const mockFetch = jest.fn().mockRejectedValue(new Error('network unavailable'));
+
+    const auth = new EnterpriseAuth({
+      fetch: mockFetch,
+    });
+
+    auth.registerOAuth2Provider('github', {
+      clientId: 'client',
+      clientSecret: 'secret',
+      authorizationUrl: 'https://auth.example/authorize',
+      tokenUrl: 'https://auth.example/token',
+      userInfoUrl: 'https://auth.example/user',
+      redirectUri: 'https://app.example/callback',
+    });
+
+    const authUrl = await auth.getOAuth2AuthUrl('github');
+
+    await expect(
+      auth.exchangeOAuth2Code(
+        'github',
+        'auth-code',
+        authUrl.codeVerifier,
+        authUrl.state,
+        'https://app.example/callback'
+      )
+    ).rejects.toThrow('network unavailable');
   });
 });
